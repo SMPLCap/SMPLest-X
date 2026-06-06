@@ -68,7 +68,7 @@ def main():
         trainer.read_timer.tic()
         
         # ddp, align random seed between devices
-        trainer.batch_generator.sampler.set_epoch(epoch)
+        trainer.batch_generator.sampler.set_epoch(epoch) #reshuffle data each epoch
 
         for itr, (inputs, targets, meta_info) in enumerate(trainer.batch_generator):
             trainer.read_timer.toc()
@@ -76,7 +76,7 @@ def main():
 
             # forward
             trainer.optimizer.zero_grad()
-            loss= trainer.model(inputs, targets, meta_info, 'train')
+            loss= trainer.model(inputs, targets, meta_info, 'train') #trainer.model.forward(inputs, targets, meta_info, 'train')
             loss_mean = {k: v.mean() for k, v in loss.items()}
             loss_sum = sum(v for k, v in loss_mean.items())
             

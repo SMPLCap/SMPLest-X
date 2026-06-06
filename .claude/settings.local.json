@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python)",
+      "Bash(\"/c/Users/gzaz976/AppData/Local/anaconda3/envs/smplestx/python.exe\")"
+    ]
+  }
+}

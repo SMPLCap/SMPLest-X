@@ -87,7 +87,7 @@ The final file structure should be like:
 sh scripts/inference.sh {MODEL_DIR} {FILE_NAME} {FPS}
 
 # For inferencing test_video.mp4 (30FPS) with SMPLest-X/pretrained_models/smplest_x_h/smplest_x_h.pth.tar
-sh scripts/inference.sh smplest_x_h test_video.mp4 30
+sh scripts/inference.sh i will run inferencesmplest_x_h test_video.mp4 30
 ```
 
 

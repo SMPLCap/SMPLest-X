@@ -149,7 +149,7 @@ class Model(nn.Module):
         return batch_hand_global_rotmat
 
     def forward(self, inputs, targets, meta_info, mode):
-        body_img = F.interpolate(inputs['img'], self.cfg.model.input_body_shape)
+        body_img = F.interpolate(inputs['img'], self.cfg.model.input_body_shape)    #READ: is this image the bb image
 
         # 1. Encoder
         img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
@@ -229,7 +229,12 @@ class Model(nn.Module):
             
             hand_index = list(self.smpl_x.joint_part['lhand']) + list(self.smpl_x.joint_part['rhand'])
             
-            
+            #---LOSSES MAPPING to humandata
+            #joint_cam = keypoints_3d
+            #joint_proj = keypoints_2d
+            #smplx_joint_cam = 3d keypoints obtained from forward passing smpl parameters, for our case these are the same
+
+
             # if root orientation not given, ignore loss wo/ ra, only for full-body dataset
             loss['joint_cam'] = self.coord_loss(joint_cam_wo_ra, targets['joint_cam'], 
                                     meta_info['joint_trunc'] * meta_info['is_3D'][:, None, None]* meta_info['joint_trunc'][:,0, :][:, None]) * smplx_kps_3d_weight

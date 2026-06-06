@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 JOB_NAME=$1
-GPUS=$2 
+GPUS=$2
 CONFIG=$3
 
 PYTHONPATH=../:$PYTHONPATH \

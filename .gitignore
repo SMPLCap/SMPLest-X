@@ -6,3 +6,6 @@ demo
 **/__pycache__
 **/.DS_Store
 **/human_model_files
+*.png
+*.zip
+*.pdf

@@ -59,7 +59,18 @@ class Trainer(Base):
     def get_optimizer(self, model):
         normal_param = []
 
-        for module in model.module.trainable_modules:
+        freeze_encoder = getattr(self.cfg.train, 'freeze_encoder', False)
+        if freeze_encoder:
+            # Freeze encoder weights and exclude from optimizer
+            for param in model.module.encoder.parameters():
+                param.requires_grad = False
+            self.logger.info('Encoder frozen — only training decoder.')
+            modules_to_train = [m for m in model.module.trainable_modules
+                                if m is not model.module.encoder]
+        else:
+            modules_to_train = model.module.trainable_modules
+
+        for module in modules_to_train:
             normal_param += list(module.parameters())
         optim_params = [
             {
@@ -206,7 +217,7 @@ class Tester(Base):
 
         # prepare network
         self.logger.info("Creating graph...")
-        model = get_model(self.cfg, 'test')
+        model = get_model(self.cfg, 'test') #smplestx model function
         model = DataParallel(model).cuda()
 
         ckpt = torch.load(self.cfg.model.pretrained_model_path, map_location=torch.device('cpu'))

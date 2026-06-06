@@ -53,6 +53,75 @@ def get_cam_params(param, idx):
     return focal_length, camera_center, R, T
 
 
+# SMPL/SMPLX body joint connections for the first 22 joints
+_BODY_SKELETON = [
+    (0, 1), (0, 2), (0, 3),
+    (1, 4), (2, 5), (3, 6),
+    (4, 7), (5, 8), (6, 9),
+    (7, 10), (8, 11), (9, 12),
+    (9, 13), (9, 14),
+    (12, 15),
+    (13, 16), (14, 17),
+    (16, 18), (17, 19),
+    (18, 20), (19, 21),
+]
+
+
+def project_keypoints3d(kps3d, focal_length, camera_center):
+    """Project 3D keypoints (camera space) to 2D image coords.
+
+    Args:
+        kps3d: (N, 3) or (N, 4) array; if 4-channel the last is confidence.
+        focal_length: [fx, fy]
+        camera_center: [cx, cy]
+
+    Returns:
+        kps2d: (N, 2) projected pixel coordinates
+        conf:  (N,)  confidence (ones if not provided)
+    """
+    kps3d = np.asarray(kps3d, dtype=np.float64)
+    has_conf = kps3d.shape[1] == 4
+    conf = kps3d[:, 3] if has_conf else np.ones(len(kps3d))
+    xyz = kps3d[:, :3]
+
+    fx, fy = focal_length[0], focal_length[1]
+    cx, cy = camera_center[0], camera_center[1]
+
+    # avoid division by zero for points behind camera
+    z = np.where(xyz[:, 2] > 1e-6, xyz[:, 2], 1e-6)
+    u = fx * xyz[:, 0] / z + cx
+    v = fy * xyz[:, 1] / z + cy
+    return np.stack([u, v], axis=1), conf
+
+
+def draw_skeleton(img, kps2d, conf, num_joints=22, conf_thresh=0.1,
+                  joint_color=(0, 0, 255), bone_color=(255, 100, 0),
+                  joint_radius=4, bone_thickness=2):
+    """Draw projected 3D keypoints and skeleton bones onto img (in-place copy)."""
+    img = img.copy()
+    kps = kps2d[:num_joints]
+    c = conf[:num_joints]
+
+    h, w = img.shape[:2]
+
+    def _valid(j):
+        return (c[j] > conf_thresh and
+                0 <= kps[j, 0] < w and
+                0 <= kps[j, 1] < h)
+
+    for i, j in _BODY_SKELETON:
+        if i < num_joints and j < num_joints and _valid(i) and _valid(j):
+            pt1 = (int(kps[i, 0]), int(kps[i, 1]))
+            pt2 = (int(kps[j, 0]), int(kps[j, 1]))
+            cv2.line(img, pt1, pt2, bone_color, bone_thickness)
+
+    for j in range(num_joints):
+        if _valid(j):
+            cv2.circle(img, (int(kps[j, 0]), int(kps[j, 1])), joint_radius, joint_color, -1)
+
+    return img
+
+
 def render_pose(img, body_model_param, body_model, camera, return_mask=False,
                  R=None, T=None):
     
@@ -117,7 +186,7 @@ def render_pose(img, body_model_param, body_model, camera, return_mask=False,
     valid_mask = valid_mask * alpha
     
     img = img / 255
-    output_img = (color[:, :, :] * valid_mask + (1 - valid_mask) * img)
+    output_img = (color[:, :, :3] * valid_mask + (1 - valid_mask) * img)
 
     img = (output_img * 255).astype(np.uint8)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -139,6 +208,7 @@ def visualize_humandata(args):
     # check for annot and type
     has_smplx, has_smpl, has_gender = False, False, False
     if 'smpl' in param.keys():
+        print('processing smpl')
         has_smpl = True
     elif 'smplx' in param.keys():
         has_smplx = True
@@ -204,14 +274,26 @@ def visualize_humandata(args):
 
         # Load image
         image_p = param['image_path'][idx]
-        image_path = os.path.join(args.image_folder, image_p) 
+        image_path = image_p
+        #image_path = os.path.join(args.image_folder, image_p) 
+
+        print(image_path)
 
         image = cv2.imread(image_path)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
+
+        if 'K' in param['meta'].item().keys():
+            K = param['meta'].item()['K'][idx]
+            k_dist = param['meta'].item()['k_dist'][idx]
+
+            image = cv2.undistort(image, K, k_dist)
+
         # ---------------------- render single pose ------------------------
         # read cam params
         focal_length, camera_center, R, T = get_cam_params(param, idx)
+        print(R)
+        print(T)
 
         # read gender
         if has_gender:
@@ -228,12 +310,35 @@ def visualize_humandata(args):
             cx=camera_center[0], cy=camera_center[1])
 
         if has_smpl:
+            
             intersect_key = list(set(body_model_param_smpl.keys()) & set(smpl_shape.keys()))
             body_model_param_tensor = {key: torch.tensor(
                     np.array(body_model_param_smpl[key][idx:idx+1]).reshape(smpl_shape[key]),
                             device=device, dtype=torch.float32)
                             for key in intersect_key
                             if len(body_model_param_smpl[key][idx:idx+1]) > 0}
+            
+            # ------------- MODIFIED ------------
+            # print(R)
+            # print(T)
+            # print(param['meta'].item()['R'][idx])
+            
+            # R_world2cam = param['meta'].item()['R'][idx]
+            # #R_world2cam = param['meta']['R'][idx]           # world-to-camera rotation (3×3)
+            # #R_flip_x = np.array([[1,0,0],[0,-1,0],[0,0,-1]])  # 180° around X
+            # R_fix = np.array([[1, 0,  0],
+            #       [0, 0,  1],
+            #       [0, -1, 0]])   # -90° around X: maps -Z → -Y
+            # #R_flip_x = np.array([[1,0,0],[0,1,0],[0,0,1]])  # 180° around X
+            # go_world_mat, _ = cv2.Rodrigues(body_model_param_smpl['global_orient'][idx])
+            # go_cam = R_fix @ R_world2cam @ go_world_mat     # flip SMPL Y-up → Y-down before world→cam
+            # go_cam_aa, _ = cv2.Rodrigues(go_cam)
+            # body_model_param_tensor['global_orient'] = torch.tensor(
+            #     go_cam_aa.reshape(1, 3), device=device, dtype=torch.float32)
+            # #body_model_param_tensor['global_orient'] = torch.zeros_like(body_model_param_tensor['global_orient'])
+
+            #----------------- MODIFIED  ----------------------
+
         
             rendered_image = render_pose(img=image, 
                                     body_model_param=body_model_param_tensor, 
@@ -256,6 +361,19 @@ def visualize_humandata(args):
 
         # ---------------------- render results ----------------------
         os.makedirs(args.output_folder, exist_ok=True)
+
+        #draw GT 2D keypoints for comparison
+        # kps2d = param['keypoints2d'][idx]   # (144, 2)
+        # kps_mask = param['keypoints2d_mask'] if 'keypoints2d_mask' in param else np.ones(144, dtype=np.uint8)
+        # for j, (u, v) in enumerate(kps2d[:22]):
+        #     if kps_mask[j] and u > 0 and v > 0:
+        #         cv2.circle(rendered_image, (int(u), int(v)), 5, (0, 255, 0), -1)
+
+        # project keypoints3d and draw skeleton
+        if 'keypoints3d' in param:
+            kps3d = param['keypoints3d'][idx]   # (N, 3) or (N, 4)
+            proj2d, proj_conf = project_keypoints3d(kps3d, focal_length, camera_center)
+            rendered_image = draw_skeleton(rendered_image, proj2d, proj_conf)
         
         # save image
         out_image_path = os.path.join(args.output_folder, 
@@ -271,6 +389,7 @@ if __name__ == '__main__':
     parser.add_argument('--hd_path', type=str, required=False,
                         help='path to humandata npz file',
                         default='/mnt/d/test_area/hd_sample_SMPLestX/hd_10sample.npz')
+    #image folder unncesesary, it taskes the path from the humandata path file
     parser.add_argument('--image_folder', type=str, required=False, 
                         help='path to the image base folder',
                         default='/mnt/d/test_area/hd_sample_SMPLestX')
