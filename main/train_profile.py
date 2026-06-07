@@ -62,7 +62,7 @@ def main():
     # ddp, align random seed between devices
     #trainer.batch_generator.sampler.set_epoch(0) #reshuffle data each epoch
 
-    with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA],
+    with profile(activities = [ProfilerActivity.CPU],
                   record_shapes = True,
                   profile_memory = True) as prof:
         with record_function("model_training:"):
@@ -75,7 +75,7 @@ def main():
     #     with_stack=False,) as prof:
             for itr, (inputs, targets, meta_info) in enumerate(trainer.batch_generator):
 
-                # forward
+                # forwarddd
                 trainer.optimizer.zero_grad()
                 loss= trainer.model(inputs, targets, meta_info, 'train') #trainer.model.forward(inputs, targets, meta_info, 'train')
                 loss_mean = {k: v.mean() for k, v in loss.items()}
@@ -90,7 +90,7 @@ def main():
                 if itr >= 25:  
                     break
 
-    print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=15))
+    print(prof.key_averages().table( row_limit=15))
 
 if __name__ == "__main__":
     main()

@@ -1,6 +1,7 @@
 import os.path as osp
 import math
 import abc
+import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel.data_parallel import DataParallel
 import torch.optim
@@ -182,10 +183,16 @@ class Trainer(Base):
             start_epoch = 0
         model.train()
 
+        # if hasattr(torch, 'compile'):
+        #     self.logger_info("Compiling encoder and decoder with torch.compile...")
+        #     model.module.encoder = torch.compile(model.module.encoder, mode='reduce-overhead')
+        #     model.module.decoder = torch.compile(model.module.decoder, mode='reduce-overhead')
+
         self.scheduler = scheduler
         self.start_epoch = start_epoch
         self.model = model
         self.optimizer = optimizer
+        #self.scaler = torch.cuda.amp.GradScaler()
 
     def logger_info(self, info):
         if self.distributed:

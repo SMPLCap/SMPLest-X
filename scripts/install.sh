@@ -2,6 +2,8 @@
 conda create -n smplestx python=3.8 -y
 conda activate smplestx
 conda install pytorch==1.12.0 torchvision==0.13.0 torchaudio==0.12.0 cudatoolkit=11.3 -c pytorch -y
+#conda install pytorch==2.2.2 torchvision==0.17.2 torchaudio==2.2.2 pytorch-cuda=12.1 -c pytorch -c nvidia -y
+
 pip install -r requirements.txt
 
 # for osmesa

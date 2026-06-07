@@ -16,7 +16,7 @@ config = {
 
   "train": {
     "num_gpus": 1,
-    "continue_train":False,     # load pretrained checkpoint
+    "continue_train":True,     # load pretrained checkpoint
     "start_over": False,         # reset optimizer moments (pretrained moments mislead at new LR)
     "end_epoch": 30,
     "train_batch_size": 16,
@@ -63,7 +63,7 @@ config = {
     # Path to the pretrained SMPLest-X checkpoint to fine-tune from
     #"pretrained_model_path":  "./pretrained_models/smplest_x_h/smplest_x_h.pth.tar",
     #"pretrained_model_path":  "./outputs/train_worldpose_ft_20260603_003131/model_dump/snapshot_2.pth.tar",
-    "pretrained_model_path":  "./outputs/saved_logs/train_worldpose_ft_20260605_105411/model_dump/snapshot_8.pth.tar",
+    "pretrained_model_path":  "./outputs/saved_logs/train_worldpose_ft_20260606_171757/model_dump/snapshot_13.pth.tar",
     "human_model_path": "./human_models/human_model_files",
     "encoder_pretrained_model_path": "./pretrained_models/vitpose-h.pth",
     "encoder_config": {

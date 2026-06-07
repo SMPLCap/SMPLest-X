@@ -151,8 +151,9 @@ class Model(nn.Module):
     def forward(self, inputs, targets, meta_info, mode):
         body_img = F.interpolate(inputs['img'], self.cfg.model.input_body_shape)    #READ: is this image the bb image
 
-        # 1. Encoder
-        img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
+        # 1. Encoder (frozen — no gradients needed)
+        with torch.no_grad():
+            img_feat, task_tokens = self.encoder(body_img)  # task_token:[bs, N, c]
 
         # 2. Decoder
         pred_mano_params = self.decoder(task_tokens, img_feat)
@@ -266,48 +267,51 @@ class Model(nn.Module):
             rhand_thumb_id = self.smpl_x.orig_joints_name.index('R_Thumb_1')
 
             # pred_pelvis -> pred_hand global orientation
-            lhand_root_rotmat_chain = self.batch_hand_global_rotation(full_body_rotmat.view(full_body_rotmat.shape[0], -1, 3, 3), 
-                                                                lwrist_pose_idx).view(-1, 9)
-            rhand_root_rotmat_chain = self.batch_hand_global_rotation(full_body_rotmat.view(full_body_rotmat.shape[0], -1, 3, 3), 
-                                                                rwrist_pose_idx).view(-1, 9)
+            #opt: Skip all hand trnsformations/loss calculations
+            if hand_root_weight > 0:
+                lhand_root_rotmat_chain = self.batch_hand_global_rotation(full_body_rotmat.view(full_body_rotmat.shape[0], -1, 3, 3),
+                                                                    lwrist_pose_idx).view(-1, 9)
+                rhand_root_rotmat_chain = self.batch_hand_global_rotation(full_body_rotmat.view(full_body_rotmat.shape[0], -1, 3, 3),
+                                                                    rwrist_pose_idx).view(-1, 9)
 
-            # -->full body dataset <--
-            # gt_pelvis -> gt_hand global orientation, for full-body dataset
-            lhand_root_pose_rotmat_chain_gt = self.batch_hand_global_rotation(targets['smplx_pose_rotmat'].view(targets['smplx_pose_rotmat'].shape[0], -1, 3, 3)[:, :22, ...], 
-                                                                lwrist_pose_idx).view(-1, 9)
-            rhand_root_pose_rotmat_chain_gt = self.batch_hand_global_rotation(targets['smplx_pose_rotmat'].view(targets['smplx_pose_rotmat'].shape[0], -1, 3, 3)[:, :22, ...],
-                                                                rwrist_pose_idx).view(-1, 9)
+                # -->full body dataset <--
+                # gt_pelvis -> gt_hand global orientation, for full-body dataset
+                lhand_root_pose_rotmat_chain_gt = self.batch_hand_global_rotation(targets['smplx_pose_rotmat'].view(targets['smplx_pose_rotmat'].shape[0], -1, 3, 3)[:, :22, ...],
+                                                                    lwrist_pose_idx).view(-1, 9)
+                rhand_root_pose_rotmat_chain_gt = self.batch_hand_global_rotation(targets['smplx_pose_rotmat'].view(targets['smplx_pose_rotmat'].shape[0], -1, 3, 3)[:, :22, ...],
+                                                                    rwrist_pose_idx).view(-1, 9)
             
-            lhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, lwrist_pose_idx]
-            rhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, rwrist_pose_idx]
+            if hand_root_weight > 0:
+                lhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, lwrist_pose_idx]
+                rhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, rwrist_pose_idx]
 
-            # gt_hand global orientation via gt_pelvis/ mano global orientation VS pred hand global orientation
-            lhand_root_loss = self.param_loss(lhand_root_pose_rotmat_chain_gt, lhand_root_pose_rotmat, lhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
-            rhand_root_loss = self.param_loss(rhand_root_pose_rotmat_chain_gt, rhand_root_pose_rotmat, rhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
-            loss['hand_root'] = (lhand_root_loss + rhand_root_loss) * hand_root_weight
+                lhand_root_loss = self.param_loss(lhand_root_pose_rotmat_chain_gt, lhand_root_pose_rotmat, lhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
+                rhand_root_loss = self.param_loss(rhand_root_pose_rotmat_chain_gt, rhand_root_pose_rotmat, rhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
+                loss['hand_root'] = (lhand_root_loss + rhand_root_loss) * hand_root_weight
 
-            if not getattr(self.cfg.train, 'no_chain_hand_loss', False):
-                lhand_root_loss_chain = self.param_loss(lhand_root_pose_rotmat_chain_gt, lhand_root_rotmat_chain, lhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
-                rhand_root_loss_chain = self.param_loss(rhand_root_pose_rotmat_chain_gt, rhand_root_rotmat_chain, rhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
-                loss['hand_root_chain'] = (lhand_root_loss_chain + rhand_root_loss_chain) * hand_root_weight
+                if not getattr(self.cfg.train, 'no_chain_hand_loss', False):
+                    lhand_root_loss_chain = self.param_loss(lhand_root_pose_rotmat_chain_gt, lhand_root_rotmat_chain, lhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
+                    rhand_root_loss_chain = self.param_loss(rhand_root_pose_rotmat_chain_gt, rhand_root_rotmat_chain, rhand_valid) * meta_info['joint_trunc'][:,0, :][:, None]
+                    loss['hand_root_chain'] = (lhand_root_loss_chain + rhand_root_loss_chain) * hand_root_weight
 
-            # import pdb; pdb.set_trace()
-            # --> hand only dataset <--
-            lhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, lhand_thumb_id]
-            rhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, rhand_thumb_id]
+                # --> hand only dataset <--
+                lhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, lhand_thumb_id]
+                rhand_valid = meta_info['smplx_pose_valid'].view(meta_info['smplx_pose_valid'].shape[0], -1, 9)[:, rhand_thumb_id]
 
-            targets['lhand_root_rotmat'] = batch_rodrigues(targets['lhand_root'].reshape(-1,3)).reshape(targets['lhand_root'].shape[0], -1) 
-            targets['rhand_root_rotmat'] = batch_rodrigues(targets['rhand_root'].reshape(-1,3)).reshape(targets['rhand_root'].shape[0], -1)
-            # MANO gt_hand global orientation VS pred hand global orientation
-            lhand_root_loss = self.param_loss(targets['lhand_root_rotmat'], lhand_root_pose_rotmat, lhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
-            rhand_root_loss = self.param_loss(targets['rhand_root_rotmat'], rhand_root_pose_rotmat, rhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
-            loss['hand_root'] += (lhand_root_loss + rhand_root_loss) * hand_root_weight
+                targets['lhand_root_rotmat'] = batch_rodrigues(targets['lhand_root'].reshape(-1,3)).reshape(targets['lhand_root'].shape[0], -1)
+                targets['rhand_root_rotmat'] = batch_rodrigues(targets['rhand_root'].reshape(-1,3)).reshape(targets['rhand_root'].shape[0], -1)
+                lhand_root_loss = self.param_loss(targets['lhand_root_rotmat'], lhand_root_pose_rotmat, lhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
+                rhand_root_loss = self.param_loss(targets['rhand_root_rotmat'], rhand_root_pose_rotmat, rhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
+                loss['hand_root'] += (lhand_root_loss + rhand_root_loss) * hand_root_weight
 
-            # consistancy loss
-            if not getattr(self.cfg.train, 'no_chain_hand_loss', False):
-                lhand_root_loss_chain = self.param_loss(targets['lhand_root_rotmat'], lhand_root_rotmat_chain, lhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
-                rhand_root_loss_chain = self.param_loss(targets['rhand_root_rotmat'], rhand_root_rotmat_chain, rhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
-                loss['hand_root_chain'] += (lhand_root_loss_chain + rhand_root_loss_chain) * hand_root_weight
+                if not getattr(self.cfg.train, 'no_chain_hand_loss', False):
+                    lhand_root_loss_chain = self.param_loss(targets['lhand_root_rotmat'], lhand_root_rotmat_chain, lhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
+                    rhand_root_loss_chain = self.param_loss(targets['rhand_root_rotmat'], rhand_root_rotmat_chain, rhand_valid) * (1 - meta_info['joint_trunc'][:,0, :][:, None])
+                    loss['hand_root_chain'] += (lhand_root_loss_chain + rhand_root_loss_chain) * hand_root_weight
+            else:
+                loss['hand_root'] = torch.zeros(1, device=body_img.device)
+                if not getattr(self.cfg.train, 'no_chain_hand_loss', False):
+                    loss['hand_root_chain'] = torch.zeros(1, device=body_img.device)
         
             return loss
 

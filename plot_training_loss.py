@@ -1,5 +1,5 @@
 """
-Plot training losses from outputs/train_worldpose_ft_20260430_142108/log/train_logs.txt
+
 """
 import re
 import argparse
@@ -8,7 +8,12 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-LOG_PATH = "outputs/train_worldpose_ft_20260603_202653/log/train_logs.txt"
+LOG_PATHS = ["outputs/saved_logs/train_worldpose_ft_20260603_003131/log/train_logs.txt",
+    "outputs/saved_logs/train_worldpose_ft_20260603_202653/log/train_logs.txt",
+    "outputs/saved_logs/train_worldpose_ft_20260605_105411/log/train_logs.txt",
+    "outputs/saved_logs/train_worldpose_ft_20260605_223355/log/train_logs.txt",
+    "outputs/saved_logs/train_worldpose_ft_20260606_171757/log/train_logs.txt",
+    "outputs/train_worldpose_ft_20260606_225445/log/train_logs.txt"]
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -29,17 +34,18 @@ ITR_RE = re.compile(r"Epoch (\d+)/\d+ itr (\d+)/(\d+):")
 LOSS_RE = re.compile(r"(loss_\w+): ([0-9.e+\-]+)")
 
 
-def parse_log(path):
+def parse_log(paths):
     records = []
-    with open(path, encoding="utf-8") as f:
-        for line in f:
-            line = ANSI_ESCAPE.sub("", line)
-            m = ITR_RE.search(line)
-            if not m:
-                continue
-            epoch, itr, total_itr = int(m.group(1)), int(m.group(2)), int(m.group(3))
-            losses = {k: float(v) for k, v in LOSS_RE.findall(line)}
-            records.append({"epoch": epoch, "itr": itr, "total_itr": total_itr, **losses})
+    for path in paths:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = ANSI_ESCAPE.sub("", line)
+                m = ITR_RE.search(line)
+                if not m:
+                    continue
+                epoch, itr, total_itr = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                losses = {k: float(v) for k, v in LOSS_RE.findall(line)}
+                records.append({"epoch": epoch, "itr": itr, "total_itr": total_itr, **losses})
     return records
 
 
@@ -286,17 +292,13 @@ def plot_paper_components(records, output_path="paper_loss_components.pdf"):
 
 
 def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--log", default=LOG_PATH)
-    parser.add_argument("--smooth", type=int, default=50,
-                        help="Smoothing window for the raw loss curve (0 to disable)")
-    parser.add_argument("--output", default="training_loss.png")
-    args = parser.parse_args()
+    smooth = 50
+    output = "training_loss.png"
 
-    records = parse_log(args.log)
+    records = parse_log(LOG_PATHS)
     print(f"Parsed {len(records)} log entries across epochs: "
           f"{sorted(set(r['epoch'] for r in records))}")
-    plot_losses(records, smooth_window=args.smooth, output_path=args.output)
+    plot_losses(records, smooth_window=smooth, output_path=output)
     plot_paper_total(records, output_path="paper_loss_total.pdf")
     plot_paper_components(records, output_path="paper_loss_components.pdf")
 

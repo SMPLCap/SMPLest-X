@@ -5,7 +5,7 @@ GPUS=$2
 CONFIG=$3
 
 PYTHONPATH=../:$PYTHONPATH \
-python -m torch.distributed.launch \
+torchrun \
     --nnodes 1 \
     --node_rank 0 \
     --master_addr 127.0.0.1 \
