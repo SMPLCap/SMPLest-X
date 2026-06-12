@@ -436,7 +436,7 @@ class HumanDataset(torch.utils.data.Dataset):
                 print("skip since no kps")
                 continue
                 
-            datalist.append({
+            sample = {
                 'img_path': img_path,
                 'img_shape': img_shape,
                 'bbox': bbox,
@@ -450,7 +450,14 @@ class HumanDataset(torch.utils.data.Dataset):
                 'model': as_smplx,
                 'extrinsic_r': extrinsic_r[i] if 'extrinsic_r' in locals() else np.eye(3,3),
                 'vertices3d': vertices3d if vertices3d is not None else -1,
-                'idx': i})
+                'idx': i}
+            # Carry temporal identity fields when present (used by WorldPoseTemporal to
+            # build per-(sequence, person) windows). These ride inside the npz 'meta' object.
+            if meta is not None and 'person_id' in meta:
+                sample['person_id'] = int(meta['person_id'][i])
+                sample['frame_idx'] = int(meta['frame_idx'][i])
+                sample['seq_name'] = str(meta['seq_name'][i])
+            datalist.append(sample)
 
         # save memory
         del content, image_path, bbox_xywh, lhand_bbox_xywh, rhand_bbox_xywh, face_bbox_xywh, keypoints3d, keypoints2d
@@ -471,6 +478,140 @@ class HumanDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.datalist)
 
+    def _build_train_targets(self, data, img, img2bb_trans, bb2img_trans, rot, do_flip, img_shape):
+        """Build (inputs, targets, meta_info) for a train sample given an already-augmented img.
+
+        Shared by the single-frame __getitem__ and the temporal dataset (which replays the
+        same augmentation params across the window and supervises only the center frame).
+        """
+        # h36m gt
+        joint_cam = data['joint_cam']
+        if joint_cam is not None:
+            dummy_cord = False
+            joint_cam = joint_cam - joint_cam[self.joint_set['root_joint_idx'], None, :]  # root-relative
+        else:
+            # dummy cord as joint_cam
+            dummy_cord = True
+            joint_cam = np.zeros((self.joint_set['joint_num'], 3), dtype=np.float32)
+
+        joint_img = data['joint_img']
+        joint_img = np.concatenate((joint_img[:, :2], joint_cam[:, 2:]), 1)  # x, y, depth
+        if not dummy_cord:
+            joint_img[:, 2] = (joint_img[:, 2] / (self.cfg.model.body_3d_size / 2) + 1) / 2. * self.cfg.model.output_hm_shape[0]  # discretize depth
+
+        joint_img_aug, joint_cam_wo_ra, \
+        joint_cam_ra, joint_valid, joint_trunc = process_db_coord(
+                                                    joint_img=joint_img,
+                                                    joint_cam=joint_cam,
+                                                    joint_valid=data['joint_valid'],
+                                                    do_flip=do_flip,
+                                                    img_shape=img_shape,
+                                                    flip_pairs=self.joint_set['flip_pairs'],
+                                                    img2bb_trans=img2bb_trans,
+                                                    rot=rot,
+                                                    src_joints_name=self.joint_set['joints_name'],
+                                                    target_joints_name=self.smpl_x.joints_name,
+                                                    input_img_shape=self.cfg.model.input_img_shape,
+                                                    output_hm_shape=self.cfg.model.output_hm_shape,
+                                                    input_body_shape=self.cfg.model.input_body_shape)
+
+        # smplx coordinates and parameters
+        smplx_param = data['smplx_param']
+        smplx_joint_img, smplx_joint_cam, smplx_joint_trunc, smplx_pose, smplx_shape, smplx_expr, \
+        smplx_pose_valid, smplx_joint_valid, smplx_expr_valid, \
+        smplx_mesh_cam_orig = process_human_model_output(
+                                    human_model_param=smplx_param,
+                                    cam_param=self.cam_param,
+                                    do_flip=do_flip,
+                                    img_shape=img_shape,
+                                    img2bb_trans=img2bb_trans,
+                                    rot=rot,
+                                    human_model_type='smplx',
+                                    joint_img=None if self.cam_param else joint_img,
+                                    body_3d_size=self.cfg.model.body_3d_size,
+                                    hand_3d_size=self.cfg.model.hand_3d_size,
+                                    face_3d_size=self.cfg.model.face_3d_size,
+                                    input_img_shape=self.cfg.model.input_img_shape,
+                                    output_hm_shape=self.cfg.model.output_hm_shape,
+                                    )
+
+        # TODO temp fix keypoints3d for renbody
+        if 'RenBody' in self.__class__.__name__:
+            joint_cam_ra = smplx_joint_cam.copy()
+            joint_cam_wo_ra = smplx_joint_cam.copy()
+            joint_cam_wo_ra[self.smpl_x.joint_part['lhand'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['lhand'], :] \
+                                                            + joint_cam_wo_ra[self.smpl_x.lwrist_idx, None, :]  # left hand root-relative
+            joint_cam_wo_ra[self.smpl_x.joint_part['rhand'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['rhand'], :] \
+                                                            + joint_cam_wo_ra[self.smpl_x.rwrist_idx, None, :]  # right hand root-relative
+            joint_cam_wo_ra[self.smpl_x.joint_part['face'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['face'], :] \
+                                                            + joint_cam_wo_ra[self.smpl_x.neck_idx, None,: ]  # face root-relative
+        # change smplx_shape if use_betas_neutral
+        # processing follows that in process_human_model_output
+        if self.use_betas_neutral:
+            smplx_shape = smplx_param['betas_neutral'].reshape(1, -1)
+            smplx_shape[(np.abs(smplx_shape) > 3).any(axis=1)] = 0.
+            smplx_shape = smplx_shape.reshape(-1)
+
+        # SMPLX pose parameter validity
+        smplx_pose_valid = np.tile(smplx_pose_valid[:, None], (1, 9)).reshape(-1)
+        smplx_joint_valid = smplx_joint_valid[:, None]
+        smplx_joint_trunc = smplx_joint_valid * smplx_joint_trunc
+        if not (smplx_shape == 0).all():
+            smplx_shape_valid = True
+        else:
+            smplx_shape_valid = False
+
+        # hand and face bbox transform
+        lhand_bbox, lhand_bbox_valid = self.process_hand_face_bbox(data['lhand_bbox'], do_flip, img_shape, img2bb_trans,
+                                                        self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
+        rhand_bbox, rhand_bbox_valid = self.process_hand_face_bbox(data['rhand_bbox'], do_flip, img_shape, img2bb_trans,
+                                                        self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
+        face_bbox, face_bbox_valid = self.process_hand_face_bbox(data['face_bbox'], do_flip, img_shape, img2bb_trans,
+                                                        self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
+        if do_flip:
+            lhand_bbox, rhand_bbox = rhand_bbox, lhand_bbox
+            lhand_bbox_valid, rhand_bbox_valid = rhand_bbox_valid, lhand_bbox_valid
+        lhand_bbox_center = (lhand_bbox[0] + lhand_bbox[1]) / 2.
+        rhand_bbox_center = (rhand_bbox[0] + rhand_bbox[1]) / 2.
+        face_bbox_center = (face_bbox[0] + face_bbox[1]) / 2.
+        lhand_bbox_size = lhand_bbox[1] - lhand_bbox[0]
+        rhand_bbox_size = rhand_bbox[1] - rhand_bbox[0]
+        face_bbox_size = face_bbox[1] - face_bbox[0]
+
+        joint_img_aug = np.nan_to_num(joint_img_aug, nan=0.0)
+        smplx_pose = np.nan_to_num(smplx_pose, nan=0.0)
+        joint_cam_wo_ra = np.nan_to_num(joint_cam_wo_ra, nan=0.0)
+        joint_cam_ra = np.nan_to_num(joint_cam_ra, nan=0.0)
+
+        smplx_cam_trans = np.array(smplx_param['trans']) if 'trans' in smplx_param else None
+        inputs = {'img': img}
+        targets = {'joint_img': joint_img_aug, # keypoints2d
+                   'smplx_joint_img': joint_img_aug, #smplx_joint_img, # projected smplx if valid cam_param, else same as keypoints2d
+                   'joint_cam': joint_cam_wo_ra, # joint_cam actually not used in any loss, # raw kps3d probably without ra
+                   'smplx_joint_cam': joint_cam_ra, # kps3d with body, face, hand ra # smplx_joint_cam if (dummy_cord or getattr(cfg, 'debug', False)) else
+                   'smplx_pose': smplx_pose,
+                   'smplx_shape': smplx_shape,
+                   'smplx_expr': smplx_expr,
+                   'lhand_bbox_center': lhand_bbox_center, 'lhand_bbox_size': lhand_bbox_size,
+                   'rhand_bbox_center': rhand_bbox_center, 'rhand_bbox_size': rhand_bbox_size,
+                   'face_bbox_center': face_bbox_center, 'face_bbox_size': face_bbox_size,
+                   'lhand_root': smplx_param['lhand_root'] if 'lhand_root' in smplx_param else np.zeros((1, 3)),
+                   'rhand_root': smplx_param['rhand_root'] if 'rhand_root' in smplx_param else np.zeros((1, 3)),
+                   'smplx_cam_trans': smplx_cam_trans}
+        meta_info = {'joint_valid': joint_valid,
+                     'joint_trunc': joint_trunc,
+                     'smplx_joint_valid': smplx_joint_valid if dummy_cord else joint_valid,
+                     'smplx_joint_trunc': smplx_joint_trunc if dummy_cord else joint_trunc,
+                     'smplx_pose_valid': smplx_pose_valid,
+                     'smplx_shape_valid': float(smplx_shape_valid),
+                     'smplx_expr_valid': float(smplx_expr_valid),
+                     'is_3D': float(False) if dummy_cord else float(True),
+                     'lhand_bbox_valid': lhand_bbox_valid,
+                     'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
+                     }
+
+        return inputs, targets, meta_info
+
     def __getitem__(self, idx):
         try:
             data = copy.deepcopy(self.datalist[idx])
@@ -482,8 +623,9 @@ class HumanDataset(torch.utils.data.Dataset):
         img_path, img_shape, bbox = data['img_path'], data['img_shape'], data['bbox']
         img = load_img(img_path)
         no_aug = getattr(self.cfg.data, 'no_aug', False)
-        img, img2bb_trans, bb2img_trans, rot, do_flip = augmentation(no_aug, img, bbox, 
-                                                                    self.data_split, 
+        img, img2bb_trans, bb2img_trans, rot, do_flip, _scale, _color_scale = augmentation(
+                                                                    no_aug, img, bbox,
+                                                                    self.data_split,
                                                                     self.cfg.model.input_img_shape)
         img = self.transform(img.astype(np.float32)) / 255.
 
@@ -494,137 +636,11 @@ class HumanDataset(torch.utils.data.Dataset):
                 self.cfg.model.princpt[1] / self.cfg.model.input_body_shape[0] * bbox[3] + bbox[1]]
 
         if self.data_split == 'train':
-            # h36m gt
-            joint_cam = data['joint_cam']
-            if joint_cam is not None:
-                dummy_cord = False
-                joint_cam = joint_cam - joint_cam[self.joint_set['root_joint_idx'], None, :]  # root-relative
-            else:
-                # dummy cord as joint_cam
-                dummy_cord = True
-                joint_cam = np.zeros((self.joint_set['joint_num'], 3), dtype=np.float32)
-
-            joint_img = data['joint_img']
-            joint_img = np.concatenate((joint_img[:, :2], joint_cam[:, 2:]), 1)  # x, y, depth
-            if not dummy_cord: 
-                joint_img[:, 2] = (joint_img[:, 2] / (self.cfg.model.body_3d_size / 2) + 1) / 2. * self.cfg.model.output_hm_shape[0]  # discretize depth
-            
-            joint_img_aug, joint_cam_wo_ra, \
-            joint_cam_ra, joint_valid, joint_trunc = process_db_coord(
-                                                        joint_img=joint_img,
-                                                        joint_cam=joint_cam, 
-                                                        joint_valid=data['joint_valid'], 
-                                                        do_flip=do_flip, 
-                                                        img_shape=img_shape, 
-                                                        flip_pairs=self.joint_set['flip_pairs'], 
-                                                        img2bb_trans=img2bb_trans, 
-                                                        rot=rot,
-                                                        src_joints_name=self.joint_set['joints_name'], 
-                                                        target_joints_name=self.smpl_x.joints_name, 
-                                                        input_img_shape=self.cfg.model.input_img_shape, 
-                                                        output_hm_shape=self.cfg.model.output_hm_shape, 
-                                                        input_body_shape=self.cfg.model.input_body_shape)
-
-            # smplx coordinates and parameters
-            smplx_param = data['smplx_param']
-            smplx_joint_img, smplx_joint_cam, smplx_joint_trunc, smplx_pose, smplx_shape, smplx_expr, \
-            smplx_pose_valid, smplx_joint_valid, smplx_expr_valid, \
-            smplx_mesh_cam_orig = process_human_model_output(
-                                        human_model_param=smplx_param, 
-                                        cam_param=self.cam_param, 
-                                        do_flip=do_flip, 
-                                        img_shape=img_shape, 
-                                        img2bb_trans=img2bb_trans,
-                                        rot=rot, 
-                                        human_model_type='smplx', 
-                                        joint_img=None if self.cam_param else joint_img,
-                                        body_3d_size=self.cfg.model.body_3d_size, 
-                                        hand_3d_size=self.cfg.model.hand_3d_size, 
-                                        face_3d_size=self.cfg.model.face_3d_size,
-                                        input_img_shape=self.cfg.model.input_img_shape, 
-                                        output_hm_shape=self.cfg.model.output_hm_shape, 
-                                        )
-
-            # TODO temp fix keypoints3d for renbody
-            if 'RenBody' in self.__class__.__name__:
-                joint_cam_ra = smplx_joint_cam.copy()
-                joint_cam_wo_ra = smplx_joint_cam.copy()
-                joint_cam_wo_ra[self.smpl_x.joint_part['lhand'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['lhand'], :] \
-                                                                + joint_cam_wo_ra[self.smpl_x.lwrist_idx, None, :]  # left hand root-relative
-                joint_cam_wo_ra[self.smpl_x.joint_part['rhand'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['rhand'], :] \
-                                                                + joint_cam_wo_ra[self.smpl_x.rwrist_idx, None, :]  # right hand root-relative
-                joint_cam_wo_ra[self.smpl_x.joint_part['face'], :] = joint_cam_wo_ra[self.smpl_x.joint_part['face'], :] \
-                                                                + joint_cam_wo_ra[self.smpl_x.neck_idx, None,: ]  # face root-relative
-            # change smplx_shape if use_betas_neutral
-            # processing follows that in process_human_model_output
-            if self.use_betas_neutral:
-                smplx_shape = smplx_param['betas_neutral'].reshape(1, -1)
-                smplx_shape[(np.abs(smplx_shape) > 3).any(axis=1)] = 0.
-                smplx_shape = smplx_shape.reshape(-1)
-                
-            # SMPLX pose parameter validity
-            smplx_pose_valid = np.tile(smplx_pose_valid[:, None], (1, 9)).reshape(-1)
-            smplx_joint_valid = smplx_joint_valid[:, None]
-            smplx_joint_trunc = smplx_joint_valid * smplx_joint_trunc
-            if not (smplx_shape == 0).all():
-                smplx_shape_valid = True
-            else: 
-                smplx_shape_valid = False
-
-            # hand and face bbox transform
-            lhand_bbox, lhand_bbox_valid = self.process_hand_face_bbox(data['lhand_bbox'], do_flip, img_shape, img2bb_trans, 
-                                                            self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
-            rhand_bbox, rhand_bbox_valid = self.process_hand_face_bbox(data['rhand_bbox'], do_flip, img_shape, img2bb_trans,
-                                                            self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
-            face_bbox, face_bbox_valid = self.process_hand_face_bbox(data['face_bbox'], do_flip, img_shape, img2bb_trans,
-                                                            self.cfg.model.input_img_shape, self.cfg.model.output_hm_shape)
-            if do_flip:
-                lhand_bbox, rhand_bbox = rhand_bbox, lhand_bbox
-                lhand_bbox_valid, rhand_bbox_valid = rhand_bbox_valid, lhand_bbox_valid
-            lhand_bbox_center = (lhand_bbox[0] + lhand_bbox[1]) / 2.
-            rhand_bbox_center = (rhand_bbox[0] + rhand_bbox[1]) / 2.
-            face_bbox_center = (face_bbox[0] + face_bbox[1]) / 2.
-            lhand_bbox_size = lhand_bbox[1] - lhand_bbox[0]
-            rhand_bbox_size = rhand_bbox[1] - rhand_bbox[0]
-            face_bbox_size = face_bbox[1] - face_bbox[0]
-
-
-            joint_img_aug = np.nan_to_num(joint_img_aug, nan=0.0)
-            smplx_pose = np.nan_to_num(smplx_pose, nan=0.0)
-            joint_cam_wo_ra = np.nan_to_num(joint_cam_wo_ra, nan=0.0)
-            joint_cam_ra = np.nan_to_num(joint_cam_ra, nan=0.0)
-
-            smplx_cam_trans = np.array(smplx_param['trans']) if 'trans' in smplx_param else None
-            inputs = {'img': img}
-            targets = {'joint_img': joint_img_aug, # keypoints2d
-                       'smplx_joint_img': joint_img_aug, #smplx_joint_img, # projected smplx if valid cam_param, else same as keypoints2d
-                       'joint_cam': joint_cam_wo_ra, # joint_cam actually not used in any loss, # raw kps3d probably without ra
-                       'smplx_joint_cam': joint_cam_ra, # kps3d with body, face, hand ra # smplx_joint_cam if (dummy_cord or getattr(cfg, 'debug', False)) else 
-                       'smplx_pose': smplx_pose,
-                       'smplx_shape': smplx_shape,
-                       'smplx_expr': smplx_expr,
-                       'lhand_bbox_center': lhand_bbox_center, 'lhand_bbox_size': lhand_bbox_size,
-                       'rhand_bbox_center': rhand_bbox_center, 'rhand_bbox_size': rhand_bbox_size,
-                       'face_bbox_center': face_bbox_center, 'face_bbox_size': face_bbox_size,
-                       'lhand_root': smplx_param['lhand_root'] if 'lhand_root' in smplx_param else np.zeros((1, 3)), 
-                       'rhand_root': smplx_param['rhand_root'] if 'rhand_root' in smplx_param else np.zeros((1, 3)),
-                       'smplx_cam_trans': smplx_cam_trans}
-            meta_info = {'joint_valid': joint_valid,
-                         'joint_trunc': joint_trunc,
-                         'smplx_joint_valid': smplx_joint_valid if dummy_cord else joint_valid,
-                         'smplx_joint_trunc': smplx_joint_trunc if dummy_cord else joint_trunc,
-                         'smplx_pose_valid': smplx_pose_valid,
-                         'smplx_shape_valid': float(smplx_shape_valid),
-                         'smplx_expr_valid': float(smplx_expr_valid),
-                         'is_3D': float(False) if dummy_cord else float(True), 
-                         'lhand_bbox_valid': lhand_bbox_valid,
-                         'rhand_bbox_valid': rhand_bbox_valid, 'face_bbox_valid': face_bbox_valid,
-                         }
-
-            return inputs, targets, meta_info
+            return self._build_train_targets(data, img, img2bb_trans, bb2img_trans,
+                                             rot, do_flip, img_shape)
 
         # test
-        else: 
+        else:
             joint_cam = data['joint_cam']
             if joint_cam is not None:
                 dummy_cord = False

@@ -104,7 +104,9 @@ def augmentation(no_aug, img, bbox, data_split, input_img_shape):
 
     img, trans, inv_trans = generate_patch_image(img, bbox, scale, rot, do_flip, input_img_shape)
     img = np.clip(img * color_scale[None, None, :], 0, 255)
-    return img, trans, inv_trans, rot, do_flip
+    # scale and color_scale are returned so a temporal dataset can replay the SAME
+    # augmentation on neighbor frames (keeps cross-frame spatial correspondence).
+    return img, trans, inv_trans, rot, do_flip, scale, color_scale
 
 
 def generate_patch_image(cvimg, bbox, scale, rot, do_flip, out_shape):
