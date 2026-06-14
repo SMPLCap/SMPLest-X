@@ -16,8 +16,8 @@ config = {
 
   "train": {
     "num_gpus": 1,
-    "continue_train":True,     # load pretrained checkpoint
-    "start_over": False,         # reset optimizer moments (pretrained moments mislead at new LR)
+    "continue_train":False,     # load pretrained checkpoint
+    "start_over": True,         # reset optimizer moments (pretrained moments mislead at new LR)
     "end_epoch": 30,
     "train_batch_size": 16,
     "num_thread": 4,

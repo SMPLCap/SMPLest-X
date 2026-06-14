@@ -8,12 +8,14 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
 
-LOG_PATHS = ["outputs/saved_logs/train_worldpose_ft_20260603_003131/log/train_logs.txt",
-    "outputs/saved_logs/train_worldpose_ft_20260603_202653/log/train_logs.txt",
-    "outputs/saved_logs/train_worldpose_ft_20260605_105411/log/train_logs.txt",
-    "outputs/saved_logs/train_worldpose_ft_20260605_223355/log/train_logs.txt",
-    "outputs/saved_logs/train_worldpose_ft_20260606_171757/log/train_logs.txt",
-    "outputs/train_worldpose_ft_20260606_225445/log/train_logs.txt"]
+LOG_PATHS = ["outputs/train_worldpose_ft_20260613_153309/log/train_logs.txt"]
+
+# LOG_PATHS = ["outputs/saved_logs/train_worldpose_ft_20260603_003131/log/train_logs.txt",
+#     "outputs/saved_logs/train_worldpose_ft_20260603_202653/log/train_logs.txt",
+#     "outputs/saved_logs/train_worldpose_ft_20260605_105411/log/train_logs.txt",
+#     "outputs/saved_logs/train_worldpose_ft_20260605_223355/log/train_logs.txt",
+#     "outputs/saved_logs/train_worldpose_ft_20260606_171757/log/train_logs.txt",
+#     "outputs/saved_logs/train_worldpose_ft_20260606_225445_30_epochs/log/train_logs.txt"]
 
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;]*m")
 
