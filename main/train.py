@@ -1,5 +1,7 @@
 import argparse
+import torch
 import torch.backends.cudnn as cudnn
+from torch.cuda.amp import autocast
 from main.config import Config
 import os.path as osp
 import os
@@ -62,6 +64,7 @@ def main():
     
     trainer._make_batch_generator()
     trainer._make_model()
+    trainer._make_test_batch_generator()
 
     for epoch in range(trainer.start_epoch, cfg.train.end_epoch):
         trainer.tot_timer.tic()
@@ -75,14 +78,22 @@ def main():
             trainer.gpu_timer.tic()
 
             # forward
-            trainer.optimizer.zero_grad()
-            loss= trainer.model(inputs, targets, meta_info, 'train')
+            #trainer.optimizer.zero_grad(set_to_none=True)
+            #loss= trainer.model(inputs, targets, meta_info, 'train') #trainer.model.forward(inputs, targets, meta_info, 'train')
+
+            #opt: add autocast
+            trainer.optimizer.zero_grad(set_to_none=True)  
+            with autocast(dtype=torch.bfloat16):
+                loss = trainer.model(inputs, targets, meta_info, 'train')
             loss_mean = {k: v.mean() for k, v in loss.items()}
             loss_sum = sum(v for k, v in loss_mean.items())
-            
+
             # backward
             loss_sum.backward()
             trainer.optimizer.step()
+            # trainer.scaler.scale(loss_sum).backward()
+            # trainer.scaler.step(trainer.optimizer)
+            # trainer.scaler.update()
             trainer.scheduler.step()
 
             trainer.gpu_timer.toc()
@@ -112,13 +123,13 @@ def main():
                 trainer.logger_info(' '.join(screen))
 
             # periodic mid-epoch checkpoint (safety net for long epochs / interruptions)
-            save_iters = getattr(cfg.train, 'save_iters', 0)
-            if save_iters and is_main_process() and (itr + 1) % save_iters == 0:
-                trainer.save_model({
-                    'epoch': epoch,
-                    'network': trainer.model.state_dict(),
-                    'optimizer': trainer.optimizer.state_dict(),
-                }, epoch, name='snapshot_latest.pth.tar')
+            # save_iters = getattr(cfg.train, 'save_iters', 0)
+            # if save_iters and is_main_process() and (itr + 1) % save_iters == 0:
+            #     trainer.save_model({
+            #         'epoch': epoch,
+            #         'network': trainer.model.state_dict(),
+            #         'optimizer': trainer.optimizer.state_dict(),
+            #     }, epoch, name='snapshot_latest.pth.tar')
 
             trainer.tot_timer.toc()
             trainer.tot_timer.tic()
@@ -140,6 +151,11 @@ def main():
                 to_remove = osp.join(cfg.log.model_dir, f'snapshot_{str(previous_saved_epoch)}.pth.tar')
                 os.remove(to_remove)
                 previous_saved_epoch = epoch
+
+        # eval on test set every 5 epochs
+        eval_epoch = getattr(cfg.train, 'eval_epoch', 5)
+        if is_main_process() and ((epoch + 1) % eval_epoch == 0 or epoch == cfg.train.end_epoch - 1):
+            trainer.evaluate(epoch)
 
         dist.barrier()
 

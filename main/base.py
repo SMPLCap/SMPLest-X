@@ -142,10 +142,51 @@ class Trainer(Base):
                                             pin_memory=True, persistent_workers=True if self.cfg.train.num_thread > 0 else False, 
                                             drop_last=True)
         else:
-            self.batch_generator = DataLoader(dataset=trainset_loader, 
+            self.batch_generator = DataLoader(dataset=trainset_loader,
                                               batch_size=self.cfg.train.num_gpus * self.cfg.train.train_batch_size,
                                               shuffle=True, num_workers=self.cfg.train.num_thread,
                                               pin_memory=True, drop_last=True)
+
+    def _make_test_batch_generator(self):
+        # data load and construct test batch generator for periodic eval during training
+        self.logger_info("Creating test dataset...")
+        self.testset = dynamic_import(
+            f"datasets.{self.cfg.data.testset}", self.cfg.data.testset)(transforms.ToTensor(), "test", self.cfg)
+        self.test_batch_generator = DataLoader(dataset=self.testset, batch_size=self.cfg.test.test_batch_size,
+                                                shuffle=False, num_workers=1, pin_memory=True)
+
+    def evaluate(self, epoch):
+        # run eval on the test set with the current model and print metrics
+        self.model.eval()
+        eval_result = {}
+        cur_sample_idx = 0
+        with torch.no_grad():
+            for inputs, targets, meta_info in self.test_batch_generator:
+                model_out = self.model(inputs, targets, meta_info, 'test')
+
+                batch_size = model_out['img'].shape[0]
+                out = {}
+                for k, v in model_out.items():
+                    if isinstance(v, torch.Tensor):
+                        out[k] = v.cpu().numpy()
+                    elif isinstance(v, list):
+                        out[k] = v
+                    else:
+                        raise ValueError('Undefined type in out. Key: {}; Type: {}.'.format(k, type(v)))
+
+                out = [{k: v[bid] for k, v in out.items()} for bid in range(batch_size)]
+
+                cur_eval_result = self.testset.evaluate(out, cur_sample_idx)
+                for k, v in cur_eval_result.items():
+                    if k in eval_result:
+                        eval_result[k] += v
+                    else:
+                        eval_result[k] = v
+                cur_sample_idx += len(out)
+
+        self.logger_info(f'Eval result at epoch {epoch}:')
+        self.testset.print_eval_result(eval_result)
+        self.model.train()
 
     def _make_model(self):
         # prepare network

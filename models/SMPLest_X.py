@@ -41,7 +41,13 @@ class Model(nn.Module):
                     p.requires_grad = False
             self.trainable_modules = [self.temporal_adapter]
         else:
-            self.trainable_modules = [self.encoder, self.decoder]
+            if getattr(config.train, 'freeze_encoder', False):
+                self.encoder.eval()
+                for p in self.encoder.parameters():
+                    p.requires_grad = False
+                self.trainable_modules = [self.decoder]
+            else:
+                self.trainable_modules = [self.encoder, self.decoder]
 
         # num of parameters
         param_net = 0
@@ -51,11 +57,13 @@ class Model(nn.Module):
         print(f'Total #trainable parameters: {param_net} ({param_net/1000000:.2f}M)')
 
     def train(self, mode=True):
-        """Keep the frozen encoder/decoder in eval mode during temporal fine-tuning."""
+        """Keep frozen encoder/decoder in eval mode during fine-tuning."""
         super().train(mode)
         if self.use_temporal:
             self.encoder.eval()
             self.decoder.eval()
+        elif getattr(self.cfg.train, 'freeze_encoder', False):
+            self.encoder.eval()
         return self
 
     def encode_temporal(self, imgs):

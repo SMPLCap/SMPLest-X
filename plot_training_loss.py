@@ -295,14 +295,14 @@ def plot_paper_components(records, output_path="paper_loss_components.pdf"):
 
 def main():
     smooth = 50
-    output = "training_loss.png"
+    output = "outputs/plot/training_loss.png"
 
     records = parse_log(LOG_PATHS)
     print(f"Parsed {len(records)} log entries across epochs: "
           f"{sorted(set(r['epoch'] for r in records))}")
     plot_losses(records, smooth_window=smooth, output_path=output)
-    plot_paper_total(records, output_path="paper_loss_total.pdf")
-    plot_paper_components(records, output_path="paper_loss_components.pdf")
+    plot_paper_total(records, output_path="outputs/plot/paper_loss_total.pdf")
+    plot_paper_components(records, output_path="outputs/plot/paper_loss_components.pdf")
 
 
 if __name__ == "__main__":

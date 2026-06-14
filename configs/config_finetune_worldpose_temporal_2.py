@@ -6,7 +6,7 @@ config = {
     "use_cache": False,
     "data_dir": "./data",
     "trainset_humandata": ["WorldPoseTemporal"],
-    "testset": "EHF",
+    "testset": "WorldPose",
     "data_strategy": "concat",
     "total_data_len": "auto",
     "bbox_ratio": 1.2,
