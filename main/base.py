@@ -1,7 +1,6 @@
 import os.path as osp
 import math
 import abc
-import torch
 from torch.utils.data import DataLoader
 from torch.nn.parallel.data_parallel import DataParallel
 import torch.optim
@@ -60,18 +59,7 @@ class Trainer(Base):
     def get_optimizer(self, model):
         normal_param = []
 
-        freeze_encoder = getattr(self.cfg.train, 'freeze_encoder', False)
-        if freeze_encoder:
-            # Freeze encoder weights and exclude from optimizer
-            for param in model.module.encoder.parameters():
-                param.requires_grad = False
-            self.logger.info('Encoder frozen — only training decoder.')
-            modules_to_train = [m for m in model.module.trainable_modules
-                                if m is not model.module.encoder]
-        else:
-            modules_to_train = model.module.trainable_modules
-
-        for module in modules_to_train:
+        for module in model.module.trainable_modules:
             normal_param += list(module.parameters())
         optim_params = [
             {
@@ -82,8 +70,9 @@ class Trainer(Base):
         optimizer = torch.optim.Adam(optim_params, lr=self.cfg.train.lr)
         return optimizer
 
-    def save_model(self, state, epoch):
-        file_path = osp.join(self.cfg.log.model_dir, f'snapshot_{str(epoch)}.pth.tar')
+    def save_model(self, state, epoch, name=None):
+        fname = name if name is not None else f'snapshot_{str(epoch)}.pth.tar'
+        file_path = osp.join(self.cfg.log.model_dir, fname)
 
         # do not save smplx layer weights
         dump_key = []
@@ -183,16 +172,10 @@ class Trainer(Base):
             start_epoch = 0
         model.train()
 
-        # if hasattr(torch, 'compile'):
-        #     self.logger_info("Compiling encoder and decoder with torch.compile...")
-        #     model.module.encoder = torch.compile(model.module.encoder, mode='reduce-overhead')
-        #     model.module.decoder = torch.compile(model.module.decoder, mode='reduce-overhead')
-
         self.scheduler = scheduler
         self.start_epoch = start_epoch
         self.model = model
         self.optimizer = optimizer
-        #self.scaler = torch.cuda.amp.GradScaler()
 
     def logger_info(self, info):
         if self.distributed:
@@ -224,7 +207,7 @@ class Tester(Base):
 
         # prepare network
         self.logger.info("Creating graph...")
-        model = get_model(self.cfg, 'test') #smplestx model function
+        model = get_model(self.cfg, 'test')
         model = DataParallel(model).cuda()
 
         ckpt = torch.load(self.cfg.model.pretrained_model_path, map_location=torch.device('cpu'))

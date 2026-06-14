@@ -1,7 +1,5 @@
 import argparse
-import torch
 import torch.backends.cudnn as cudnn
-from torch.cuda.amp import autocast
 from main.config import Config
 import os.path as osp
 import os
@@ -15,7 +13,7 @@ from human_models.human_models import SMPL, SMPLX
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--local_rank', '--local-rank', type=int, dest='num_gpus')
+    parser.add_argument('--local_rank', type=int, dest='num_gpus')
     parser.add_argument('--num_gpus', type=int, dest='num_gpus')
     parser.add_argument('--master_port', type=int, dest='master_port')
     parser.add_argument('--exp_name', type=str, default='output/test')
@@ -70,29 +68,21 @@ def main():
         trainer.read_timer.tic()
         
         # ddp, align random seed between devices
-        trainer.batch_generator.sampler.set_epoch(epoch) #reshuffle data each epoch
+        trainer.batch_generator.sampler.set_epoch(epoch)
 
         for itr, (inputs, targets, meta_info) in enumerate(trainer.batch_generator):
             trainer.read_timer.toc()
             trainer.gpu_timer.tic()
 
             # forward
-            #trainer.optimizer.zero_grad(set_to_none=True)
-            #loss= trainer.model(inputs, targets, meta_info, 'train') #trainer.model.forward(inputs, targets, meta_info, 'train')
-
-            #opt: add autocast
-            trainer.optimizer.zero_grad(set_to_none=True)  
-            with autocast(dtype=torch.bfloat16):
-                loss = trainer.model(inputs, targets, meta_info, 'train')
+            trainer.optimizer.zero_grad()
+            loss= trainer.model(inputs, targets, meta_info, 'train')
             loss_mean = {k: v.mean() for k, v in loss.items()}
             loss_sum = sum(v for k, v in loss_mean.items())
-
+            
             # backward
             loss_sum.backward()
             trainer.optimizer.step()
-            # trainer.scaler.scale(loss_sum).backward()
-            # trainer.scaler.step(trainer.optimizer)
-            # trainer.scaler.update()
             trainer.scheduler.step()
 
             trainer.gpu_timer.toc()
@@ -120,6 +110,15 @@ def main():
                 ]
                 screen += ['%s: %.4f' % ('loss_' + k, v.detach()) for k, v in loss_print.items()]
                 trainer.logger_info(' '.join(screen))
+
+            # periodic mid-epoch checkpoint (safety net for long epochs / interruptions)
+            save_iters = getattr(cfg.train, 'save_iters', 0)
+            if save_iters and is_main_process() and (itr + 1) % save_iters == 0:
+                trainer.save_model({
+                    'epoch': epoch,
+                    'network': trainer.model.state_dict(),
+                    'optimizer': trainer.optimizer.state_dict(),
+                }, epoch, name='snapshot_latest.pth.tar')
 
             trainer.tot_timer.toc()
             trainer.tot_timer.tic()
